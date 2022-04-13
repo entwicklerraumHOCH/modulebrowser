@@ -1,18 +1,34 @@
-<template>
-  <div class="home">
-    <img alt="Vue logo" src="../assets/logo.png">
-    <HelloWorld msg="Welcome to Your Vue.js + TypeScript App"/>
-  </div>
+<template lang="pug">
+.home
+  p Loaded {{ Object.keys(modules).length }} modules
+  ul
+    li(v-for="x in modules")
+      router-link(:to="`/module/${encodeURIComponent(x.id)}`") {{ x.id }}
 </template>
 
 <script lang="ts">
-import { defineComponent } from 'vue';
-import HelloWorld from '@/components/HelloWorld.vue'; // @ is an alias to /src
+import { computed, defineComponent } from "vue";
+import HelloWorld from "@/components/HelloWorld.vue"; // @ is an alias to /src
+import { useStore } from "vuex";
+import { AppStore } from "@/store";
 
 export default defineComponent({
-  name: 'HomeView',
+  name: "HomeView",
   components: {
     HelloWorld,
+  },
+  setup() {
+    const store = useStore<AppStore>();
+
+    return {
+      modules: computed(() => store.state.modules),
+      refresh: () => store.dispatch("refreshModules"),
+    };
+  },
+  mounted() {
+    if (this.modules.length == 0) {
+      this.refresh();
+    }
   },
 });
 </script>
