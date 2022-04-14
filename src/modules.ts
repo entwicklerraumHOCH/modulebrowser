@@ -2,6 +2,7 @@ export type Module
     = ContentModule
     | SeqModule
     | StackModule
+    | ForkModule
     | BaseModule
 
 interface BaseModule {
@@ -10,6 +11,8 @@ interface BaseModule {
     meta?: Record<string, any>
     depend?: Record<string, string>
 }
+
+const durationFactor = 1000000000
 
 export function isRef(m: Module): m is { id: string } {
     return Object.keys(m).length == 1 && 'id' in m;
@@ -29,7 +32,7 @@ export function isStack(m: Module): m is StackModule {
 
 export interface Binding {
     event: 'start' | 'end'
-    offset?: string
+    offset?: number
     play: Module
 }
 
@@ -45,9 +48,13 @@ export interface StackModule extends BaseModule {
     stack: Module[]
 }
 
+export interface ForkModule extends BaseModule {
+    fork: {mod: Module, as?: string}
+}
+
 export type ContentSpec = {
     channel: string
-    duration: string
+    duration: number
 } & TriggerSpec
 
 export type TriggerSpec
@@ -79,17 +86,51 @@ function cur(m: Module): ModCur {
 }
 
 type ChannelBlocks = Record<string, { trigger: any, start: number, end: number }[]>
+export interface ContentSummary {
+    duration: number
+    blocks: ChannelBlocks
+}
 
-export function content(m: Module, offset: number = 0): ChannelBlocks {
-    if (isContent(m)) {
-        let blk = <any>{ start: offset, end: offset + (<any>m.content.duration/1000000000) }
-        if ('trigger' in m.content) {
-            return {
-                [m.content.channel]: [{ ...blk, trigger: m.content.trigger }]
+export function content(m: Module, offset: number = 0): ContentSummary {
+    let sum = content_specific(m, offset)
+
+    if(m.at !== undefined) {
+        for(let bind of m.at) {
+            if(!['start', 'end'].includes(bind.event)) {
+                console.warn(`unhandled at-binding event: ${bind.event}. skipping.`, bind)
+                continue
+            }
+
+            let bindOffset = offset + (bind.offset || 0) / durationFactor
+            switch(bind.event) {
+                case 'end':
+                    bindOffset += sum.duration
+            }
+            let bindSum = content(bind.play, bindOffset)
+            for(let chan of Object.keys(bindSum.blocks)) {
+                if(!(chan in sum.blocks)) {
+                    sum.blocks[chan] = []
+                }
+                for(let bound of bindSum.blocks[chan])
+                    sum.blocks[chan].push(bound)
             }
         }
+    }
+
+    return sum
+}
+
+function content_specific(m: Module, offset: number = 0): ContentSummary {
+    if (isContent(m)) {
+        let blk = { start: offset, end: offset + (m.content.duration / durationFactor) }
+        let chans = {
+            [m.content.channel]: 'trigger' in m.content
+                ? [{ ...blk, trigger: m.content.trigger }]
+                : [{ ...blk, trigger: Object.values(m.content.switch.case).join(' / ') }]
+        }
         return {
-            [m.content.channel]: [{ ...blk, trigger: m.content.switch }]
+            duration: blk.end - blk.start,
+            blocks: chans
         }
     }
 
@@ -97,45 +138,58 @@ export function content(m: Module, offset: number = 0): ChannelBlocks {
         let t = offset
         let x = <ChannelBlocks>{}
 
-        for(let e of m.seq) {
-            let blks = content(e,t)
-            let end = Object.values(blks).reduce((a,b)=>{
-                let max = b.reduce((x,y)=> y.end > x ? y.end : x, 0)
-                return a < max ? max : a
-            }, t)
-            t = end
+        for (let e of m.seq) {
+            let sum = content(e, t);
+            t += sum.duration
 
-            for(let k of Object.keys(blks)) {
-                if(!(k in x)) {
+            for (let k of Object.keys(sum.blocks)) {
+                if (!(k in x)) {
                     x[k] = []
                 }
-                for(let v of blks[k])
+                for (let v of sum.blocks[k])
                     x[k].push(v)
             }
         }
-        return x
+        return {
+            duration: t - offset,
+            blocks: x
+        }
     }
     if (isStack(m)) {
         let x = <ChannelBlocks>{}
+        let dur = 0
 
-        for(let e of m.stack) {
-            let blks = content(e, offset)
-            let end = Object.values(blks).reduce((a,b)=>{
-                let max = b.reduce((x,y)=> y.end > x ? y.end : x, 0)
-                return a < max ? max : a
-            }, offset)
+        for (let e of m.stack) {
+            let sum = content(e, offset)
+            if (sum.duration > dur)
+                dur = sum.duration;
 
-            for(let k of Object.keys(blks)) {
-                if(!(k in x)) {
+            for (let k of Object.keys(sum.blocks)) {
+                if (!(k in x)) {
                     x[k] = []
                 }
-                for(let v of blks[k])
+                for (let v of sum.blocks[k])
                     x[k].push(v)
             }
         }
-        return x
+        return {
+            duration: dur,
+            blocks: x
+        }
     }
-    return {}
+
+    if('fork' in m) {
+        let sum = content(m.fork.mod, offset)
+        return {
+            duration: 0,
+            blocks: sum.blocks
+        }
+    }
+
+    return {
+        duration: 0,
+        blocks: {}
+    }
 }
 
 export function dur(m: Module): Promise<{ seconds?: number, text: string }> {
