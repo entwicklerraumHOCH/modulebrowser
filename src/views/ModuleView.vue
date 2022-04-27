@@ -63,7 +63,7 @@ export default defineComponent({
   },
   data: () => ({
     // duration: 0,
-    zoom: 5,
+    zoom: 1,
   }),
   async mounted() {
     let id = this.$route.params.id as string;
